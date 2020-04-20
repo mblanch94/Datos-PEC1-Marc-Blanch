@@ -1,0 +1,348 @@
+
+# 6. Apéndice
+
+## 6.1. Preparación de los datos para el análisis. 
+
+Los archivos de los datos crudos y el archivo *targets* se importaron a RStudio para proceder con el análisis.
+
+```{r}
+targets <- read.csv2("~/Desktop/PEC1_OMICS/data/targets.csv", header = TRUE, sep = ";") 
+knitr::kable(targets, booktabs = TRUE,caption = 'Contendio del archivo targets para este análisis')
+```
+
+```{r}
+library(oligo)
+celFiles <- list.celfiles("~/Desktop/PEC1_OMICS/data", full.names = TRUE)
+library(Biobase)
+my.targets <-read.AnnotatedDataFrame(file.path("~/Desktop/PEC1_OMICS/data","targets.csv"), header = TRUE, row.names = 1, sep=";") 
+Datos_crudos <- read.celfiles(celFiles, phenoData = my.targets)
+```
+
+```{r}
+my.targets@data$ShortName->rownames(pData(Datos_crudos))
+colnames(Datos_crudos) <-rownames(pData(Datos_crudos)) 
+```
+
+
+## 6.2. Control de calidad de los datos crudos. 
+
+Para comprovar la calidad de los datos se realizó un Array Quality Metrics, un Principal Component Analysis y se represento en un *boxplot* la distribución de las intensidades de los muestras de los datos crudos. 
+
+### 6.2.1 Array Quality Metrics 
+
+```{r}
+library(arrayQualityMetrics)
+arrayQualityMetrics(Datos_crudos, outdir = file.path("~/Desktop/PEC1_OMICS/results", "QCDir.Norm"), force=TRUE)
+```
+
+### 6.2.2 Principal Component Analysis
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+plotPCA_función <- function (datos, labels, factor, title, scale,colores, size = 1.5, glineas = 0.25) {data <- prcomp(t(datos),scale=scale) 
+  dataDf <- data.frame(data$x)
+  Group <- factor
+  loads <- round(data$sdev^2/sum(data$sdev^2)*100,1)
+  p1 <- ggplot(dataDf,aes(x=PC1, y=PC2)) +
+     theme_classic() +
+     geom_hline(yintercept = 0, color = "gray70") +
+     geom_vline(xintercept = 0, color = "gray70") +
+     geom_point(aes(color = Group), alpha = 0.55, size = 3) +
+     coord_cartesian(xlim = c(min(data$x[,1])-5,max(data$x[,1])+5)) +
+     scale_fill_discrete(name = "Grupo")
+ p1 + geom_text_repel(aes(y = PC2 + 0.25, label = labels),segment.size = 0.25, size = size) + 
+    labs(x = c(paste("PC1",loads[1],"%")),y=c(paste("PC2",loads[2],"%"))) +  
+     ggtitle(paste("Principal Component Analysis para: ",title,sep=" "))+ 
+     theme(plot.title = element_text(hjust = 0.5)) +
+     scale_color_manual(values=colores)}
+```
+
+```{r}
+plotPCA_función(exprs(Datos_crudos), labels = targets$ShortName, factor = targets$Group, title="Datos crudos", scale = FALSE, size = 3, colores = c("yellow", " blue", "green", "magenta"))
+```
+
+### 6.2.3 Distribución de las intensidades de los muestras de los datos crudos. 
+
+```{r}
+boxplot(Datos_crudos, cex.axis=0.5, las=2,  which="all", col = c(rep("green", 3), rep("magenta", 3), rep("yellow", 3), rep("blue", 3)),main="Distribución de las intensidades de los datos crudos")
+```
+
+
+## 6.3. Normalización.
+
+Se empleó el *Robust Multichip Analysis* para la normalización.   
+
+```{r}
+eset_rma <- rma(Datos_crudos)
+```
+
+
+## 6.4. Control de calidad de los datos normalizados.
+
+El proceso es el mismo que en el control de calidad de los datos crudos. También se realizó un Principal Variation Component Analysis. 
+
+### 6.4.1 Array Quality Metrics
+
+Primero se realiza el *ArrayQualityMetrics*, 
+
+```{r}
+arrayQualityMetrics(eset_rma, outdir = file.path("~/Desktop/PEC1_OMICS/results", "QCDir.Norm2"), force=TRUE)
+```
+
+### 6.4.2 Principal Component Analysis
+
+```{r}
+plotPCA_función(exprs(eset_rma), labels = targets$ShortName, factor = targets$Group, title="Datos normalizados", scale = FALSE, size = 3, colores = c("yellow", "blue", "green", "magenta"))
+```
+
+### 6.4.3 Distribución de las intensidades de los muestras de los datos crudos. 
+
+```{r}
+boxplot(eset_rma, cex.axis=0.5, las=2,  which="all", col = c(rep("green", 3), rep("magenta", 3), rep("yellow", 3), rep("blue", 3)),main="Distribución de las intensidades de los datos normalizados")
+```
+
+### 6.4.4 Principal Variation Component Analysis. 
+
+```{r}
+library(pvca)
+pData(eset_rma) <- targets
+pct_threshold <- 0.6
+batch.factores <- c("Genotype", "Condition")
+pvcaObj <- pvcaBatchAssess (eset_rma, batch.factores, pct_threshold)
+```
+
+```{r}
+bp <- barplot(pvcaObj$dat, xlab = "Effects", ylab = "Variación de la proporción promedio ponderada", ylim= c(0,1.1),col = c("mediumorchid"), las=2,main="Estimación PVCA")
+axis(1, at = bp, labels = pvcaObj$label, cex.axis = 0.55, las=2)
+values = pvcaObj$dat
+new_values = round(values , 3)
+text(bp,pvcaObj$dat,labels = new_values, pos=3, cex = 0.5)
+```
+
+
+## 6.5. Filtraje no específico.
+
+### 6.5.1 Proceso de filtraje. 
+
+```{r}
+library(genefilter)
+library(hta20transcriptcluster.db)
+annotation(eset_rma) <- "hta20transcriptcluster.db"
+filtered <- nsFilter(eset_rma, require.entrez = TRUE, remove.dupEntrez = TRUE, var.filter=TRUE, var.func=IQR, var.cutoff=0.5, filterByQuantile=TRUE, feature.exclude = "^AFFX")
+print(filtered$filter.log)
+eset_filtered <-filtered$eset
+```
+
+### 6.5.2 Exportación de los datos. 
+
+```{r}
+write.csv(exprs(eset_rma), file="~/Desktop/PEC1_OMICS/results/Datos.Normalizados.csv")
+write.csv(exprs(eset_filtered), file="~/Desktop/PEC1_OMICS/results/Datos.Filtrados.csv")
+save(eset_rma, eset_filtered, file="~/Desktop/PEC1_OMICS/results/Datos.Normalizados.Rda")
+```
+
+
+## 6.6. Identificación de genes diferencialmente expresados.
+
+### 6.6.1 Detección de los genes con mayor expresión diferencial. 
+
+```{r}
+library(limma)
+sds <- apply (exprs(eset_filtered), 1, sd)
+sdsO<- sort(sds)
+plot(1:length(sdsO), sdsO, main="Distribución de la variabilidad de todos los genes",sub="Las líneas verticales representan los percentiles 90% y 95%.",xlab="Índex (del menos al más variable)", ylab="Desviación estándar")
+abline(v=length(sds)*c(0.9,0.95))
+```
+
+Se empleó el método de *Liniar Models for Microarrays*, implementado en el paquete *limma*, para identificar los genes.  
+
+### 6.6.2 Definición de la matriz de diseño.
+
+```{r}
+if (!exists("eset_filtered")) load (file="~/Desktop/PEC1_OMICS/results/Datos.Normalizados.Rda")
+Matriz_diseño<- model.matrix(~0+Group, pData(eset_filtered))
+colnames(Matriz_diseño) <- c("A549.KO3.Mock", "A549.KO3.Virus", "A549.Mock", "A549.Virus")
+print(Matriz_diseño)
+```
+
+### 6.6.3 Definición de las comparaciones en la matriz de contrastes. 
+
+```{r}
+Matriz_constrastes <- makeContrasts (C1 = A549.KO3.Virus-A549.KO3.Mock, C2 = A549.Virus-A549.Mock, C3 = A549.Mock-A549.KO3.Mock, C4 = A549.KO3.Virus-A549.Virus, levels=Matriz_diseño)
+print(Matriz_constrastes)
+```
+
+### 6.6.4 Estimación del modelo y selección de los genes.  
+
+Los *p-values* fueron ajustados utilizando el método de Benjamini y Hochberg Benjamini and Hochberg. 
+
+```{r}
+fit<-lmFit(eset_filtered, Matriz_diseño)
+fit.main<-contrasts.fit(fit, Matriz_constrastes)
+fit.main<-eBayes(fit.main)
+class(fit.main)
+```
+
+### 6.6.5 Obtención de las listas con los genes diferencialmente expresados.  
+
+```{r}
+topTab_C1 <- topTable (fit.main, number=nrow(fit.main), coef="C1", adjust="fdr") 
+head(topTab_C1)
+topTab_C2 <- topTable (fit.main, number=nrow(fit.main), coef="C2", adjust="fdr") 
+head(topTab_C2)
+topTab_C3 <- topTable (fit.main, number=nrow(fit.main), coef="C3", adjust="fdr") 
+head(topTab_C3)
+topTab_C4 <- topTable (fit.main, number=nrow(fit.main), coef="C4", adjust="fdr") 
+head(topTab_C4)
+```
+
+
+## 6.7. Anotación de los resultados.
+
+Se anotó el *Gene Symbol*, el identificador de *Entrez Gene* y la *Gene Description* de los genes diferencialmente expresados. 
+
+```{r}
+annotatedTopTable <- function(topTab, anotPackage)
+{
+topTab <- cbind(PROBEID=rownames(topTab), topTab)
+myProbes <- rownames(topTab)
+thePackage <- eval(parse(text = anotPackage))
+geneAnots <- select(thePackage, myProbes, c("SYMBOL", "ENTREZID", "GENENAME"))
+annotatedTopTab<- merge(x=geneAnots, y=topTab, by.x="PROBEID", by.y="PROBEID")
+return(annotatedTopTab)
+}
+```
+
+```{r}
+topAnotados_C1 <- annotatedTopTable(topTab_C1,anotPackage="hta20transcriptcluster.db")
+head(topAnotados_C1)
+topAnotados_C2 <- annotatedTopTable(topTab_C2,anotPackage="hta20transcriptcluster.db")
+head(topAnotados_C2)
+topAnotados_C3 <- annotatedTopTable(topTab_C3,anotPackage="hta20transcriptcluster.db")
+head(topAnotados_C3)
+topAnotados_C4 <- annotatedTopTable(topTab_C4,anotPackage="hta20transcriptcluster.db")
+head(topAnotados_C4)
+```
+
+```{r}
+write.csv(topAnotados_C1, file="~/Desktop/PEC1_OMICS/results/topAnotados_C1.csv")
+write.csv(topAnotados_C2, file="~/Desktop/PEC1_OMICS/results/topAnotados_C2.csv")
+write.csv(topAnotados_C3, file="~/Desktop/PEC1_OMICS/results/topAnotados_C3.csv")
+write.csv(topAnotados_C4, file="~/Desktop/PEC1_OMICS/results/topAnotados_C4.csv")
+```
+
+## 6.8. Comparación entre distintas comparaciones. 
+
+```{r}
+res<-decideTests(fit.main, method="separate", adjust.method="fdr", p.value = 0.05, lfc = 0.5)
+```
+
+```{r}
+sum.res.rows<-apply(abs(res),1,sum)
+res.seleccionados<-res[sum.res.rows!=0,] 
+print(summary(res))
+```
+
+```{r}
+vennDiagram (res.seleccionados[,1:2], cex=0.9)
+title("Genes en común entre las comparaciones C1 y C2\n Genes seleccionados con FDR < 0.05 and logFC > 0.5")
+vennDiagram (res.seleccionados[,3:4], cex=0.9)
+title("Genes en común entre las comparaciones C3 y C4\n Genes seleccionados con FDR < 0.05 and logFC > 0.5")
+vennDiagram (res.seleccionados[,1:4], cex=0.9)
+title("Genes en común entre todas las comparaciones\n Genes seleccionados con FDR < 0.05 and logFC > 0.5")
+```
+
+## 6.9. Visualización de los genes diferencialmente expresados. 
+
+### 6.9.1 Volcano plots. 
+
+```{r}
+geneSymbols <- select(hta20transcriptcluster.db, rownames(fit.main), c("SYMBOL"))
+SYMBOLS<- geneSymbols$SYMBOL
+```
+
+```{r}
+volcanoplot(fit.main, coef=1, highlight=4, names=SYMBOLS, main=paste("Genes diferencialmente expresados", colnames(Matriz_constrastes)[1], sep="\n"))
+abline(v=c(-1,1))
+volcanoplot(fit.main, coef=2, highlight=4, names=SYMBOLS, main=paste("Genes diferencialmente expresados", colnames(Matriz_constrastes)[2], sep="\n"))
+abline(v=c(-1,1))
+volcanoplot(fit.main, coef=3, highlight=4, names=SYMBOLS, main=paste("Genes diferencialmente expresados", colnames(Matriz_constrastes)[3], sep="\n"))
+abline(v=c(-1,1))
+volcanoplot(fit.main, coef=4, highlight=4, names=SYMBOLS, main=paste("Genes diferencialmente expresados", colnames(Matriz_constrastes)[4], sep="\n"))
+abline(v=c(-1,1))
+```
+
+### 6.9.2 Heatmap. 
+
+```{r}
+probes_Heatmap <- rownames(res.seleccionados)
+Datos_heatmap <- exprs(eset_filtered)[rownames(exprs(eset_filtered)) %in% probes_Heatmap,]
+geneSymbols <- select(hta20transcriptcluster.db, rownames(Datos_heatmap), c("SYMBOL"))
+SYMBOLS<- geneSymbols$SYMBOL
+rownames(Datos_heatmap) <- SYMBOLS
+write.csv(Datos_heatmap, file = file.path("~/Desktop/PEC1_OMICS/results/Heatmap.csv"))
+```
+
+```{r}
+library(gplots)
+my_palette <- colorRampPalette(c("blue", "red"))(n = 299)
+heatmap.2(Datos_heatmap,Rowv = TRUE,Colv = TRUE,dendrogram = "both",main = "Genes diferencialmente expresados \n FDR < 0,05, logFC >=0,5",scale = "row",col = my_palette,sepcolor = "white",sepwidth = c(0.05,0.05), cexRow = 0.5, cexCol = 0.9,key = TRUE,keysize = 1.5, density.info = "histogram",ColSideColors = c(rep("red",3),rep("blue",3), rep("green",3), rep("yellow",3)),tracecol = NULL, srtCol = 30)
+```
+
+## 6.10. Análisis de significación biológica (“Gene Enrichment Analysis”).
+
+Para ello se empleó el paquete *ReactomePA* implementado en *Bioconductor*. 
+
+```{r}
+listOfTables <- list(C1 = topTab_C1, C2  = topTab_C2, C3 = topTab_C3, C4 = topTab_C4)
+listOfSelected <- list()
+for (i in 1:length(listOfTables)){topTab <- listOfTables[[i]]
+whichGenes<-topTab["adj.P.Val"]<0.05
+selectedIDs <- rownames(topTab)[whichGenes]
+EntrezIDs<- select(hta20transcriptcluster.db, selectedIDs, c("ENTREZID"))
+EntrezIDs <- EntrezIDs$ENTREZID
+listOfSelected[[i]] <- EntrezIDs
+names(listOfSelected)[i] <- names(listOfTables)[i]
+}
+sapply(listOfSelected, length)
+```
+
+```{r}
+library(org.Hs.eg.db)
+mapped_genes2GO <- mappedkeys(org.Hs.egGO)
+mapped_genes2KEGG <- mappedkeys(org.Hs.egPATH)
+mapped_genes <- union(mapped_genes2GO , mapped_genes2KEGG)
+```
+
+```{r}
+library(ReactomePA)
+library(reactome.db)
+listOfData <- listOfSelected[1:4]
+comparisonsNames <- names(listOfData)
+universe <- mapped_genes
+for (i in 1:length(listOfData)){
+  genesIn <- listOfData[[i]]
+  comparison <- comparisonsNames[i]
+  enrich.result <- enrichPathway(gene = genesIn,pvalueCutoff = 0.05,readable = T,pAdjustMethod = "BH",organism = "human",universe = universe)
+  cat("##################################")
+  cat("\nComparison: ", comparison,"\n")
+  print(head(enrich.result))
+  
+  if (length(rownames(enrich.result@result)) != 0) {
+  write.csv(as.data.frame(enrich.result), 
+             file =paste0("~/Desktop/PEC1_OMICS/results/","ReactomePA.Resultados.",comparison,".csv"), 
+             row.names = FALSE)
+  pdf(file=paste0("~/Desktop/PEC1_OMICS/results/","ReactomePABarras.",comparison,".pdf"))
+    print(barplot(enrich.result, showCategory = 15, font.size = 4, 
+            title = paste0("Reactome Pathway Analysis for ", comparison,". Barplot")))
+  dev.off()
+  
+  pdf(file = paste0("~/Desktop/PEC1_OMICS/results/","ReactomePARed.",comparison,".pdf"))
+    print(cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, 
+         vertex.label.cex = 0.75))
+  dev.off()
+  }
+}
+```
+
